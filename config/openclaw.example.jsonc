@@ -1,0 +1,38 @@
+{
+  // Merge this into ~/.openclaw/openclaw.json on the Hostinger VPS.
+  gateway: {
+    port: 18789,
+    bind: "loopback",
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+  channels: {
+    whatsapp: {
+      enabled: true,
+      dmPolicy: "allowlist",
+      allowFrom: ["+972501234567"],
+      pluginHooks: {
+        messageReceived: false,
+      },
+    },
+  },
+  plugins: {
+    entries: {
+      "easycall-cursor-bridge": {
+        enabled: true,
+        config: {
+          repoUrl: "${EASYCALL_REPO_URL}",
+          startingRef: "${EASYCALL_STARTING_REF}",
+          cursorWebhookUrl: "${CURSOR_WEBHOOK_URL}",
+          cursorWebhookField: "${CURSOR_CREATE_AGENT_WEBHOOK_FIELD}",
+          ownerWaid: "${EASYCALL_OWNER_WAID}",
+          whatsappAccount: "${OPENCLAW_WHATSAPP_ACCOUNT}",
+          openclawBin: "${OPENCLAW_BIN}",
+          statePath: "${OPENCLAW_BRIDGE_STATE_PATH}",
+        },
+      },
+    },
+  },
+}

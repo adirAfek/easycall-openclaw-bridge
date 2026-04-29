@@ -1,0 +1,62 @@
+{
+  "id": "easycall-cursor-bridge",
+  "name": "EasyCall Cursor Bridge",
+  "description": "Launch Cursor Cloud Agents from OpenClaw chat messages and report PR results back to WhatsApp.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "cursorApiKey": {
+        "type": "string",
+        "description": "Cursor API key. Prefer CURSOR_API_KEY in the VPS environment."
+      },
+      "cursorWebhookSecret": {
+        "type": "string",
+        "description": "Shared secret used to verify Cursor webhook signatures. Prefer CURSOR_WEBHOOK_SECRET."
+      },
+      "cursorWebhookUrl": {
+        "type": "string",
+        "description": "Public HTTPS URL for this plugin's /hooks/cursor route."
+      },
+      "repoUrl": {
+        "type": "string",
+        "description": "GitHub repository URL for EasyCall."
+      },
+      "startingRef": {
+        "type": "string",
+        "default": "main",
+        "description": "Default branch/ref Cursor agents start from."
+      },
+      "modelId": {
+        "type": "string",
+        "description": "Optional Cursor model id from GET /v1/models."
+      },
+      "ownerWaid": {
+        "type": "string",
+        "description": "Optional owner WhatsApp target in E.164 format, e.g. +972... If omitted, webhook results are logged instead of sent by WhatsApp."
+      },
+      "whatsappAccount": {
+        "type": "string",
+        "description": "Optional OpenClaw WhatsApp account id for multi-account setups."
+      },
+      "openclawBin": {
+        "type": "string",
+        "default": "openclaw",
+        "description": "OpenClaw CLI path used for outbound owner notifications."
+      },
+      "statePath": {
+        "type": "string",
+        "description": "Optional JSON fallback state path when OpenClaw runtime state is unavailable."
+      },
+      "cursorWebhookField": {
+        "type": "string",
+        "default": "webhookUrl",
+        "description": "Cursor create-agent request field used for webhook URL. Keep configurable while v1 API is beta."
+      }
+    }
+  },
+  "skills": [
+    "skills"
+  ]
+}

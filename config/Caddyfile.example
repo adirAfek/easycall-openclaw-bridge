@@ -1,0 +1,10 @@
+claw.example.com {
+  encode zstd gzip
+
+  @cursorWebhook path /hooks/cursor
+  reverse_proxy @cursorWebhook 127.0.0.1:18789
+
+  # Keep the general OpenClaw gateway private. Only the Cursor webhook path is
+  # exposed publicly; operator access should go through SSH or Tailscale.
+  respond "not found" 404
+}
