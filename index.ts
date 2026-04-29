@@ -37,6 +37,10 @@ type BridgeConfig = {
   whatsappAccount?: string;
   openclawBin: string;
   statePath: string;
+  easycallProductionNumber: string;
+  qaCallerNumber?: string;
+  qaMaxDurationSeconds: number;
+  qaNotifyMode: "log" | "whatsapp";
 };
 
 type CursorCreateAgentParams = {
@@ -63,13 +67,51 @@ type CursorListAgentsParams = {
   limit?: number;
 };
 
+type VoiceQaStartParams = {
+  scenario?: string;
+  persona?: string;
+  instructions?: string;
+  language?: string;
+  to?: string;
+  maxDurationSeconds?: number;
+  dedupeKey?: string;
+};
+
+type VoiceQaStatusParams = {
+  qaRunId?: string;
+  callId?: string;
+};
+
+type VoiceQaReportParams = {
+  qaRunId?: string;
+  callId?: string;
+  scenario: string;
+  experience: string;
+  whatWorked?: string[];
+  whatFailed?: string[];
+  scores?: {
+    understanding?: number;
+    latency?: number;
+    warmth?: number;
+    taskCompletion?: number;
+  };
+  evidence?: string[];
+  recommendedNextTest?: string;
+  transcript?: string;
+};
+
 type BridgeRecord = {
-  kind: "agent" | "run" | "prompt";
+  kind: "agent" | "run" | "prompt" | "voice_qa";
   agentId?: string;
   runId?: string;
+  qaRunId?: string;
+  callId?: string;
   status?: string;
   promptHash?: string;
   prompt?: string;
+  scenario?: string;
+  persona?: string;
+  report?: string;
   ownerWaid?: string;
   agentUrl?: string;
   prUrl?: string;
@@ -255,6 +297,178 @@ export default definePluginEntry({
       },
     });
 
+    api.registerTool({
+      name: "easycall_voice_qa_start",
+      description:
+        "Start a manual notify-only voice QA call to the EasyCall production phone agent. Use for experience testing, not for creating PRs.",
+      parameters: Type.Object({
+        scenario: Type.Optional(Type.String({ description: "What the tester is trying to do on the call." })),
+        persona: Type.Optional(Type.String({ description: "Customer persona to act as during the call." })),
+        instructions: Type.Optional(Type.String({ description: "Extra tester behavior, e.g. interrupt, pause, Hebrew/English mix." })),
+        language: Type.Optional(Type.String({ description: "Preferred call language, e.g. Hebrew, English, Hebrew-English mix." })),
+        to: Type.Optional(Type.String({ description: "Override EasyCall target number. Defaults to configured production number." })),
+        maxDurationSeconds: Type.Optional(Type.Number({ minimum: 30, maximum: 600 })),
+        dedupeKey: Type.Optional(Type.String({ description: "Optional stable key for state correlation." })),
+      }),
+      async execute(_id: string, params: VoiceQaStartParams) {
+        assertConfigured(config, ["easycallProductionNumber"]);
+
+        const scenario = params.scenario?.trim() || "First-time customer placing a simple restaurant order.";
+        const persona = params.persona?.trim() || "A polite but realistic customer who wants the call to feel easy.";
+        const language = params.language?.trim() || "Use the language that feels natural for the EasyCall agent; Hebrew-English mix is allowed.";
+        const target = params.to?.trim() || config.easycallProductionNumber;
+        const maxDuration = Math.min(
+          600,
+          Math.max(30, Math.round(params.maxDurationSeconds ?? config.qaMaxDurationSeconds)),
+        );
+        const qaRunId = `voiceqa_${hashText(`${Date.now()}:${scenario}:${persona}`).slice(0, 12)}`;
+        const message = buildVoiceQaCallMessage({ scenario, persona, language, instructions: params.instructions, maxDuration });
+
+        const result = await runOpenClawVoiceCommand(config, [
+          "voicecall",
+          "call",
+          "--to",
+          target,
+          "--message",
+          message,
+          "--mode",
+          "conversation",
+          "--json",
+        ]);
+
+        const callId = readString(result, "callId") ??
+          readString(result, "id") ??
+          readNestedString(result, ["call", "id"]) ??
+          readNestedString(result, ["data", "callId"]);
+        const status = readString(result, "status") ??
+          readNestedString(result, ["call", "status"]) ??
+          readNestedString(result, ["data", "status"]) ??
+          "started";
+        const now = new Date().toISOString();
+        const record: BridgeRecord = {
+          kind: "voice_qa",
+          qaRunId,
+          callId,
+          status,
+          scenario,
+          persona,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        await state.set(`voice_qa:${qaRunId}`, record);
+        if (callId) await state.set(`voice_call:${callId}`, record);
+
+        return toolText(
+          [
+            "EasyCall voice QA call started.",
+            `QA run: ${qaRunId}`,
+            callId ? `Call: ${callId}` : "Call id: not returned by voicecall CLI; use recent voice-call status/logs.",
+            `Target: ${redactPhone(target)}`,
+            `Scenario: ${scenario}`,
+            `Persona: ${persona}`,
+            "Reminder: notify-only. Do not create a Cursor PR from this QA run.",
+          ].join("\n"),
+        );
+      },
+    });
+
+    api.registerTool({
+      name: "easycall_voice_qa_status",
+      description: "Poll a manual EasyCall voice QA call and return status/transcript data when available.",
+      parameters: Type.Object({
+        qaRunId: Type.Optional(Type.String({ description: "QA run id returned by easycall_voice_qa_start." })),
+        callId: Type.Optional(Type.String({ description: "OpenClaw voice-call id." })),
+      }),
+      async execute(_id: string, params: VoiceQaStatusParams) {
+        const existing = params.qaRunId ? await state.get(`voice_qa:${params.qaRunId}`) : undefined;
+        const callId = params.callId?.trim() || existing?.callId;
+        if (!callId) {
+          return toolText("No call id is known yet. Check OpenClaw voice-call logs, or start a new QA call.");
+        }
+
+        const result = await runOpenClawVoiceCommand(config, ["voicecall", "status", "--call-id", callId, "--json"]);
+        const status = readString(result, "status") ??
+          readNestedString(result, ["call", "status"]) ??
+          readNestedString(result, ["data", "status"]);
+        const transcript = readTranscript(result);
+        const now = new Date().toISOString();
+        const qaRunId = params.qaRunId || existing?.qaRunId || `voiceqa_${hashText(callId).slice(0, 12)}`;
+
+        await state.set(`voice_qa:${qaRunId}`, {
+          ...(existing ?? {
+            kind: "voice_qa",
+            qaRunId,
+            callId,
+            createdAt: now,
+          }),
+          status: status || existing?.status,
+          summary: transcript ? transcript.slice(0, 1800) : existing?.summary,
+          updatedAt: now,
+        });
+
+        return toolJson({
+          qaRunId,
+          callId,
+          status,
+          terminal: isTerminalCallStatus(status),
+          transcript,
+          raw: result,
+        });
+      },
+    });
+
+    api.registerTool({
+      name: "easycall_voice_qa_report",
+      description:
+        "Store and optionally notify the final EasyCall voice QA report. This is notify-only and must not create Cursor PRs.",
+      parameters: Type.Object({
+        qaRunId: Type.Optional(Type.String()),
+        callId: Type.Optional(Type.String()),
+        scenario: Type.String({ minLength: 4 }),
+        experience: Type.String({ minLength: 8 }),
+        whatWorked: Type.Optional(Type.Array(Type.String())),
+        whatFailed: Type.Optional(Type.Array(Type.String())),
+        scores: Type.Optional(Type.Object({
+          understanding: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
+          latency: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
+          warmth: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
+          taskCompletion: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
+        })),
+        evidence: Type.Optional(Type.Array(Type.String())),
+        recommendedNextTest: Type.Optional(Type.String()),
+        transcript: Type.Optional(Type.String()),
+      }),
+      async execute(_id: string, params: VoiceQaReportParams) {
+        const qaRunId = params.qaRunId?.trim() || (params.callId ? `voiceqa_${hashText(params.callId).slice(0, 12)}` : `voiceqa_${hashText(params.scenario).slice(0, 12)}`);
+        const existing = await state.get(`voice_qa:${qaRunId}`);
+        const report = formatVoiceQaReport(params);
+        const now = new Date().toISOString();
+
+        await state.set(`voice_qa:${qaRunId}`, {
+          ...(existing ?? {
+            kind: "voice_qa",
+            qaRunId,
+            callId: params.callId,
+            createdAt: now,
+          }),
+          status: "reported",
+          scenario: params.scenario,
+          report,
+          summary: params.transcript?.slice(0, 1800),
+          updatedAt: now,
+        });
+
+        if (config.qaNotifyMode === "whatsapp" && config.ownerWaid) {
+          await sendWhatsapp(config, config.ownerWaid, report);
+        } else {
+          api.logger?.info?.("[easycall-cursor-bridge] voice QA report", { qaRunId, report });
+        }
+
+        return toolText(report);
+      },
+    });
+
     api.registerHttpRoute({
       path: "/hooks/cursor",
       auth: "plugin",
@@ -325,6 +539,15 @@ function readConfig(api: PluginApi): BridgeConfig {
     statePath:
       readConfigString(pluginConfig, "statePath", "OPENCLAW_BRIDGE_STATE_PATH", false) ||
       join(home, ".openclaw", "easycall-cursor-bridge", "state.json"),
+    easycallProductionNumber:
+      readConfigString(pluginConfig, "easycallProductionNumber", "EASYCALL_PRODUCTION_NUMBER", false) ||
+      "+972765993143",
+    qaCallerNumber: readConfigString(pluginConfig, "qaCallerNumber", "EASYCALL_QA_CALLER_NUMBER", false),
+    qaMaxDurationSeconds: readConfigNumber(pluginConfig, "qaMaxDurationSeconds", "EASYCALL_QA_MAX_DURATION_SECONDS", 180),
+    qaNotifyMode:
+      readConfigString(pluginConfig, "qaNotifyMode", "EASYCALL_QA_NOTIFY_MODE", false) === "whatsapp"
+        ? "whatsapp"
+        : "log",
   };
 }
 
@@ -338,6 +561,17 @@ function readConfigString(
   if (typeof value === "string" && value.trim()) return value.trim();
   if (required) return "";
   return "";
+}
+
+function readConfigNumber(
+  pluginConfig: Record<string, unknown>,
+  key: string,
+  envName: string,
+  defaultValue: number,
+): number {
+  const raw = pluginConfig[key] ?? process.env[envName];
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+  return Number.isFinite(value) ? value : defaultValue;
 }
 
 function assertConfigured(config: BridgeConfig, keys: Array<keyof BridgeConfig>): void {
@@ -501,6 +735,106 @@ async function sendWhatsapp(config: BridgeConfig, target: string, message: strin
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
   });
+}
+
+async function runOpenClawVoiceCommand(config: BridgeConfig, args: string[]): Promise<any> {
+  const { stdout, stderr } = await execFileAsync(config.openclawBin, args, {
+    timeout: Math.max(60_000, (config.qaMaxDurationSeconds + 30) * 1000),
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  const text = stdout.trim() || stderr.trim();
+  return text ? safeJson(text) : {};
+}
+
+function buildVoiceQaCallMessage(params: {
+  scenario: string;
+  persona: string;
+  language: string;
+  instructions?: string;
+  maxDuration: number;
+}): string {
+  return [
+    "You are OpenClaw running a manual notify-only QA call against EasyCall, a restaurant voice ordering agent.",
+    "",
+    `Persona: ${params.persona}`,
+    `Scenario: ${params.scenario}`,
+    `Language: ${params.language}`,
+    params.instructions?.trim() ? `Extra behavior: ${params.instructions.trim()}` : undefined,
+    "",
+    "During the call, act like a real customer. Try to complete the scenario naturally.",
+    "Notice latency, warmth, understanding, interruptions, and whether the task is completed.",
+    `Keep the call under ${params.maxDuration} seconds.`,
+    "After the call, do not create a PR. Use easycall_voice_qa_report with your experience and evidence.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function readTranscript(result: any): string | undefined {
+  const direct = readString(result, "transcript") ?? readNestedString(result, ["call", "transcript"]);
+  if (direct) return direct;
+  const transcript = result?.transcript ?? result?.call?.transcript ?? result?.data?.transcript;
+  if (!Array.isArray(transcript)) return undefined;
+  return transcript
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      const speaker = readString(entry, "speaker") ?? readString(entry, "role") ?? "unknown";
+      const text = readString(entry, "text") ?? readString(entry, "content");
+      return text ? `${speaker}: ${text}` : undefined;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isTerminalCallStatus(status?: string): boolean {
+  if (!status) return false;
+  return ["completed", "failed", "busy", "no-answer", "no_answer", "canceled", "cancelled", "ended"].includes(
+    status.toLowerCase(),
+  );
+}
+
+function formatVoiceQaReport(params: VoiceQaReportParams): string {
+  const scores = params.scores ?? {};
+  return [
+    "EasyCall Voice QA",
+    "",
+    "Scenario:",
+    params.scenario,
+    "",
+    "Experience:",
+    params.experience,
+    "",
+    "What worked:",
+    formatList(params.whatWorked, "No clear positives captured."),
+    "",
+    "What failed/confused me:",
+    formatList(params.whatFailed, "None obvious."),
+    "",
+    "Scores:",
+    `- Understanding: ${formatScore(scores.understanding)}`,
+    `- Latency: ${formatScore(scores.latency)}`,
+    `- Warmth: ${formatScore(scores.warmth)}`,
+    `- Task completion: ${formatScore(scores.taskCompletion)}`,
+    "",
+    "Evidence:",
+    formatList(params.evidence, "No transcript evidence captured."),
+    "",
+    "Recommended next test:",
+    params.recommendedNextTest?.trim() || "Repeat this scenario with one extra customer interruption.",
+  ].join("\n");
+}
+
+function formatList(values: string[] | undefined, fallback: string): string {
+  const cleaned = values?.map((value) => value.trim()).filter(Boolean) ?? [];
+  return cleaned.length ? cleaned.map((value) => `- ${value}`).join("\n") : `- ${fallback}`;
+}
+
+function formatScore(value?: number): string {
+  return Number.isFinite(value) ? `${value}/5` : "not scored";
+}
+
+function redactPhone(value: string): string {
+  return value.length > 4 ? `${value.slice(0, 4)}***${value.slice(-3)}` : "***";
 }
 
 async function readRawBody(req: AsyncIterable<Buffer>, maxBytes: number): Promise<Buffer> {

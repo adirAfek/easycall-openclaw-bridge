@@ -53,6 +53,29 @@
         "type": "string",
         "default": "webhookUrl",
         "description": "Cursor create-agent request field used for webhook URL. Keep configurable while v1 API is beta."
+      },
+      "easycallProductionNumber": {
+        "type": "string",
+        "default": "+972765993143",
+        "description": "EasyCall production PSTN number that manual voice QA calls should dial."
+      },
+      "qaCallerNumber": {
+        "type": "string",
+        "description": "Optional Twilio/OpenClaw caller number reserved for QA calls. The voice-call plugin usually owns the actual from number."
+      },
+      "qaMaxDurationSeconds": {
+        "type": "number",
+        "default": 180,
+        "description": "Default max duration budget for manual voice QA calls."
+      },
+      "qaNotifyMode": {
+        "type": "string",
+        "enum": [
+          "log",
+          "whatsapp"
+        ],
+        "default": "log",
+        "description": "Where final voice QA reports are sent. Use log first; whatsapp requires ownerWaid and WhatsApp channel."
       }
     }
   },

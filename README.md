@@ -8,6 +8,9 @@ This OpenClaw plugin lets the EasyCall owner send a WhatsApp message to a dedica
 - `cursor_followup_run` — sends a follow-up prompt to an existing Cursor agent.
 - `cursor_get_run` — polls one Cursor run.
 - `cursor_list_agents` — lists recent Cursor agents.
+- `easycall_voice_qa_start` — starts a manual notify-only voice QA call to EasyCall.
+- `easycall_voice_qa_status` — polls an OpenClaw voice-call status/transcript.
+- `easycall_voice_qa_report` — stores and optionally notifies the final voice QA report.
 - `POST /hooks/cursor` — verifies Cursor webhook signatures and replies to the owner on WhatsApp.
 
 ## Required Secrets
@@ -31,6 +34,10 @@ OPENCLAW_BIN=openclaw
 OPENCLAW_BRIDGE_STATE_PATH=/home/openclaw/.openclaw/easycall-cursor-bridge/state.json
 # Optional WhatsApp completion notices:
 # EASYCALL_OWNER_WAID=+972501234567
+EASYCALL_PRODUCTION_NUMBER=+972765993143
+# EASYCALL_QA_CALLER_NUMBER=+15551234567
+EASYCALL_QA_MAX_DURATION_SECONDS=180
+EASYCALL_QA_NOTIFY_MODE=log
 ```
 
 ## Hostinger / OpenClaw Setup
@@ -84,6 +91,31 @@ systemctl restart openclaw
 ```
 
 5. Put Caddy or another TLS proxy in front of `/hooks/cursor` only. See `config/Caddyfile.example`.
+
+## Manual Voice QA
+
+The bridge can teach OpenClaw to act as a real caller and report how the EasyCall voice agent felt. This is notify-only by default and does not create Cursor PRs.
+
+Install and configure OpenClaw's voice-call plugin separately:
+
+```bash
+openclaw plugins install voice-call --dangerously-force-unsafe-install
+openclaw plugins enable voice-call
+openclaw voicecall setup --json
+```
+
+Then ask OpenClaw:
+
+```text
+Run EasyCall voice QA as a first-time customer ordering something simple.
+```
+
+Expected:
+
+- OpenClaw calls `easycall_voice_qa_start`.
+- OpenClaw polls `easycall_voice_qa_status`.
+- OpenClaw writes a short subjective report with scores and evidence via `easycall_voice_qa_report`.
+- No Cursor PR is created unless Adir explicitly asks after reading the report.
 
 ## Smoke Test
 
