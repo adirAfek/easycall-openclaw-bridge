@@ -257,12 +257,15 @@ export default definePluginEntry({
 
     api.registerHttpRoute({
       path: "/hooks/cursor",
+      auth: "plugin",
+      match: "exact",
+      replaceExisting: true,
       handler: async (req: any, res: any) => {
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.setHeader("Allow", "POST");
           res.end("Method Not Allowed");
-          return;
+          return true;
         }
 
         let rawBody: Buffer;
@@ -271,14 +274,14 @@ export default definePluginEntry({
         } catch (error) {
           res.statusCode = 413;
           res.end(JSON.stringify({ ok: false, error: errorText(error) }));
-          return;
+          return true;
         }
 
         const signature = String(req.headers?.["x-webhook-signature"] ?? "");
         if (!verifyCursorSignature(config.cursorWebhookSecret, rawBody, signature)) {
           res.statusCode = 401;
           res.end(JSON.stringify({ ok: false, error: "invalid signature" }));
-          return;
+          return true;
         }
 
         let payload: any;
@@ -287,7 +290,7 @@ export default definePluginEntry({
         } catch {
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, error: "invalid json" }));
-          return;
+          return true;
         }
 
         res.statusCode = 202;
@@ -297,6 +300,7 @@ export default definePluginEntry({
         void handleCursorWebhook(api, config, state, payload).catch((error) => {
           api.logger?.error?.("[easycall-cursor-bridge] webhook handling failed", errorText(error));
         });
+        return true;
       },
     });
   },
