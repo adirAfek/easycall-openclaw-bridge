@@ -333,13 +333,13 @@ export default definePluginEntry({
           message,
           "--mode",
           "conversation",
-          "--json",
         ]);
 
         const callId = readString(result, "callId") ??
           readString(result, "id") ??
           readNestedString(result, ["call", "id"]) ??
-          readNestedString(result, ["data", "callId"]);
+          readNestedString(result, ["data", "callId"]) ??
+          readTextCallId(result);
         const status = readString(result, "status") ??
           readNestedString(result, ["call", "status"]) ??
           readNestedString(result, ["data", "status"]) ??
@@ -387,10 +387,11 @@ export default definePluginEntry({
           return toolText("No call id is known yet. Check OpenClaw voice-call logs, or start a new QA call.");
         }
 
-        const result = await runOpenClawVoiceCommand(config, ["voicecall", "status", "--call-id", callId, "--json"]);
+        const result = await runOpenClawVoiceCommand(config, ["voicecall", "status", "--call-id", callId]);
         const status = readString(result, "status") ??
           readNestedString(result, ["call", "status"]) ??
-          readNestedString(result, ["data", "status"]);
+          readNestedString(result, ["data", "status"]) ??
+          readTextStatus(result);
         const transcript = readTranscript(result);
         const now = new Date().toISOString();
         const qaRunId = params.qaRunId || existing?.qaRunId || `voiceqa_${hashText(callId).slice(0, 12)}`;
@@ -743,7 +744,8 @@ async function runOpenClawVoiceCommand(config: BridgeConfig, args: string[]): Pr
     maxBuffer: 4 * 1024 * 1024,
   });
   const text = stdout.trim() || stderr.trim();
-  return text ? safeJson(text) : {};
+  const parsed = text ? safeJson(text) : {};
+  return typeof parsed === "string" ? { text: parsed } : parsed;
 }
 
 function buildVoiceQaCallMessage(params: {
@@ -771,6 +773,8 @@ function buildVoiceQaCallMessage(params: {
 }
 
 function readTranscript(result: any): string | undefined {
+  const textTranscript = typeof result?.text === "string" && /transcript/i.test(result.text) ? result.text : undefined;
+  if (textTranscript) return textTranscript;
   const direct = readString(result, "transcript") ?? readNestedString(result, ["call", "transcript"]);
   if (direct) return direct;
   const transcript = result?.transcript ?? result?.call?.transcript ?? result?.data?.transcript;
@@ -784,6 +788,16 @@ function readTranscript(result: any): string | undefined {
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function readTextCallId(result: any): string | undefined {
+  const text = typeof result?.text === "string" ? result.text : "";
+  return text.match(/\b(?:call(?:\s*id)?|id)\s*[:=]\s*([A-Za-z0-9_.:-]+)/i)?.[1];
+}
+
+function readTextStatus(result: any): string | undefined {
+  const text = typeof result?.text === "string" ? result.text : "";
+  return text.match(/\bstatus\s*[:=]\s*([A-Za-z_-]+)/i)?.[1];
 }
 
 function isTerminalCallStatus(status?: string): boolean {
