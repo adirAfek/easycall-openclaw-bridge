@@ -4,11 +4,6 @@
   "private": true,
   "type": "module",
   "description": "OpenClaw plugin that turns WhatsApp requests into Cursor Cloud Agent PRs for EasyCall.",
-  "scripts": {
-    "check:cursor": "node scripts/check-cursor-api.mjs",
-    "hostinger": "node scripts/hostinger-vps.mjs",
-    "smoke:webhook": "node scripts/smoke-webhook.mjs"
-  },
   "openclaw": {
     "extensions": [
       "./index.ts"
