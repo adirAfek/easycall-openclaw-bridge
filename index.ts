@@ -41,6 +41,12 @@ type BridgeConfig = {
   qaCallerNumber?: string;
   qaMaxDurationSeconds: number;
   qaNotifyMode: "log" | "whatsapp";
+  qaCallProvider: "voicecall" | "twilio_say" | "twilio_gather";
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  qaPublicBaseUrl?: string;
+  qaGeminiApiKey?: string;
+  qaMaxTurns: number;
 };
 
 type CursorCreateAgentParams = {
@@ -116,6 +122,10 @@ type BridgeRecord = {
   agentUrl?: string;
   prUrl?: string;
   summary?: string;
+  provider?: string;
+  transcript?: string[];
+  turnCount?: number;
+  maxTurns?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -324,19 +334,24 @@ export default definePluginEntry({
         const qaRunId = `voiceqa_${hashText(`${Date.now()}:${scenario}:${persona}`).slice(0, 12)}`;
         const message = buildVoiceQaCallMessage({ scenario, persona, language, instructions: params.instructions, maxDuration });
 
-        const result = await runOpenClawVoiceCommand(config, [
-          "voicecall",
-          "call",
-          "--to",
-          target,
-          "--message",
-          message,
-          "--mode",
-          "conversation",
-        ]);
+        const result = config.qaCallProvider === "twilio_say"
+          ? await startTwilioSayCall(config, target, message)
+          : config.qaCallProvider === "twilio_gather"
+            ? await startTwilioGatherCall(config, qaRunId, target, { scenario, persona, language, instructions: params.instructions })
+            : await runOpenClawVoiceCommand(config, [
+                "voicecall",
+                "call",
+                "--to",
+                target,
+                "--message",
+                message,
+                "--mode",
+                "conversation",
+              ]);
 
         const callId = readString(result, "callId") ??
           readString(result, "id") ??
+          readString(result, "sid") ??
           readNestedString(result, ["call", "id"]) ??
           readNestedString(result, ["data", "callId"]) ??
           readTextCallId(result);
@@ -352,6 +367,10 @@ export default definePluginEntry({
           status,
           scenario,
           persona,
+          provider: config.qaCallProvider,
+          transcript: [],
+          turnCount: 0,
+          maxTurns: config.qaMaxTurns,
           createdAt: now,
           updatedAt: now,
         };
@@ -364,6 +383,7 @@ export default definePluginEntry({
             "EasyCall voice QA call started.",
             `QA run: ${qaRunId}`,
             callId ? `Call: ${callId}` : "Call id: not returned by voicecall CLI; use recent voice-call status/logs.",
+          `Provider: ${config.qaCallProvider}`,
             `Target: ${redactPhone(target)}`,
             `Scenario: ${scenario}`,
             `Persona: ${persona}`,
@@ -471,6 +491,76 @@ export default definePluginEntry({
     });
 
     api.registerHttpRoute({
+      path: "/hooks/voice-qa/turn",
+      auth: "plugin",
+      match: "exact",
+      replaceExisting: true,
+      handler: async (req: any, res: any) => {
+        if (req.method !== "POST" && req.method !== "GET") {
+          res.statusCode = 405;
+          res.setHeader("Allow", "GET, POST");
+          res.end("Method Not Allowed");
+          return true;
+        }
+
+        try {
+          const qaRunId = readQueryString(req.url, "qaRunId");
+          if (!qaRunId) {
+            res.statusCode = 400;
+            res.end(twimlSay("Missing QA run id. Goodbye."));
+            return true;
+          }
+
+          const body = req.method === "POST" ? await readUrlEncodedBody(req, 64 * 1024) : new URLSearchParams();
+          const speech = body.get("SpeechResult")?.trim() || "";
+          const callSid = body.get("CallSid")?.trim() || "";
+          const existing = await state.get(`voice_qa:${qaRunId}`);
+          const now = new Date().toISOString();
+          const transcript = [...(existing?.transcript ?? [])];
+          if (speech) transcript.push(`EasyCall: ${speech}`);
+
+          const turnCount = (existing?.turnCount ?? 0) + 1;
+          const maxTurns = existing?.maxTurns ?? config.qaMaxTurns;
+          const done = turnCount >= maxTurns || looksTerminalConversation(speech);
+          const reply = done
+            ? "Thank you, that is enough for my order test. Goodbye."
+            : await buildQaCallerReply(config, {
+                scenario: existing?.scenario || "First-time customer ordering one simple item",
+                persona: existing?.persona || "Polite first-time customer",
+                transcript,
+                turnCount,
+              });
+
+          transcript.push(`OpenClaw QA caller: ${reply}`);
+          await state.set(`voice_qa:${qaRunId}`, {
+            ...(existing ?? {
+              kind: "voice_qa",
+              qaRunId,
+              callId: callSid,
+              createdAt: now,
+            }),
+            callId: existing?.callId || callSid,
+            status: done ? "conversation_completed" : "in_progress",
+            transcript,
+            turnCount,
+            summary: transcript.join("\n").slice(0, 1800),
+            updatedAt: now,
+          });
+
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/xml; charset=utf-8");
+          res.end(done ? twimlSay(reply, true) : twimlGather(config, qaRunId, reply));
+        } catch (error) {
+          api.logger?.error?.("[easycall-cursor-bridge] voice QA turn failed", errorText(error));
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/xml; charset=utf-8");
+          res.end(twimlSay("I hit a QA test error. Goodbye.", true));
+        }
+        return true;
+      },
+    });
+
+    api.registerHttpRoute({
       path: "/hooks/cursor",
       auth: "plugin",
       match: "exact",
@@ -549,6 +639,20 @@ function readConfig(api: PluginApi): BridgeConfig {
       readConfigString(pluginConfig, "qaNotifyMode", "EASYCALL_QA_NOTIFY_MODE", false) === "whatsapp"
         ? "whatsapp"
         : "log",
+    qaCallProvider:
+      readConfigString(pluginConfig, "qaCallProvider", "EASYCALL_QA_CALL_PROVIDER", false) === "twilio_gather"
+        ? "twilio_gather"
+        : readConfigString(pluginConfig, "qaCallProvider", "EASYCALL_QA_CALL_PROVIDER", false) === "twilio_say"
+          ? "twilio_say"
+        : "voicecall",
+    twilioAccountSid: readConfigString(pluginConfig, "twilioAccountSid", "TWILIO_ACCOUNT_SID", false),
+    twilioAuthToken: readConfigString(pluginConfig, "twilioAuthToken", "TWILIO_AUTH_TOKEN", false),
+    qaPublicBaseUrl: readConfigString(pluginConfig, "qaPublicBaseUrl", "EASYCALL_QA_PUBLIC_BASE_URL", false),
+    qaGeminiApiKey:
+      readConfigString(pluginConfig, "qaGeminiApiKey", "EASYCALL_QA_GEMINI_API_KEY", false) ||
+      readConfigString(pluginConfig, "qaGeminiApiKey", "GEMINI_API_KEY", false) ||
+      readConfigString(pluginConfig, "qaGeminiApiKey", "GOOGLE_API_KEY", false),
+    qaMaxTurns: readConfigNumber(pluginConfig, "qaMaxTurns", "EASYCALL_QA_MAX_TURNS", 6),
   };
 }
 
@@ -746,6 +850,205 @@ async function runOpenClawVoiceCommand(config: BridgeConfig, args: string[]): Pr
   const text = stdout.trim() || stderr.trim();
   const parsed = text ? safeJson(text) : {};
   return typeof parsed === "string" ? { text: parsed } : parsed;
+}
+
+async function startTwilioSayCall(config: BridgeConfig, target: string, message: string): Promise<any> {
+  if (!config.twilioAccountSid || !config.twilioAuthToken || !config.qaCallerNumber) {
+    throw new Error("twilio_say requires twilioAccountSid, twilioAuthToken, and qaCallerNumber");
+  }
+
+  const body = new URLSearchParams({
+    To: target,
+    From: config.qaCallerNumber,
+    Twiml: buildTwilioSayTwiml(message),
+    Timeout: "20",
+  });
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.twilioAccountSid)}/Calls.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${config.twilioAccountSid}:${config.twilioAuthToken}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    },
+  );
+  const text = await res.text();
+  const payload = text ? safeJson(text) : {};
+  if (!res.ok) {
+    throw new Error(`Twilio call failed ${res.status}: ${typeof payload === "object" ? JSON.stringify(payload) : text}`);
+  }
+  return payload;
+}
+
+async function startTwilioGatherCall(
+  config: BridgeConfig,
+  qaRunId: string,
+  target: string,
+  params: { scenario: string; persona: string; language: string; instructions?: string },
+): Promise<any> {
+  if (!config.twilioAccountSid || !config.twilioAuthToken || !config.qaCallerNumber || !config.qaPublicBaseUrl) {
+    throw new Error("twilio_gather requires twilioAccountSid, twilioAuthToken, qaCallerNumber, and qaPublicBaseUrl");
+  }
+
+  const firstLine = [
+    "Hello, this is OpenClaw running a voice QA test for EasyCall.",
+    "I am calling as a real first time customer.",
+    "I want to order one simple item.",
+  ].join(" ");
+  const actionUrl = voiceQaTurnUrl(config, qaRunId);
+  const body = new URLSearchParams({
+    To: target,
+    From: config.qaCallerNumber,
+    Twiml: twimlGather(config, qaRunId, firstLine),
+    Timeout: "20",
+  });
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.twilioAccountSid)}/Calls.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${config.twilioAccountSid}:${config.twilioAuthToken}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    },
+  );
+  const text = await res.text();
+  const payload = text ? safeJson(text) : {};
+  if (!res.ok) {
+    throw new Error(`Twilio gather call failed ${res.status}: ${typeof payload === "object" ? JSON.stringify(payload) : text}`);
+  }
+  return { ...(typeof payload === "object" && payload ? payload : {}), actionUrl, scenario: params.scenario, persona: params.persona };
+}
+
+function buildTwilioSayTwiml(message: string): string {
+  const spoken = message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+    .join(". ");
+  return [
+    "<Response>",
+    `<Say voice="alice" language="en-US">${escapeXml(spoken)}</Say>`,
+    "<Pause length=\"2\"/>",
+    "</Response>",
+  ].join("");
+}
+
+function twimlGather(config: BridgeConfig, qaRunId: string, spoken: string): string {
+  const action = escapeXml(voiceQaTurnUrl(config, qaRunId));
+  return [
+    "<Response>",
+    `<Say voice="alice" language="en-US">${escapeXml(spoken)}</Say>`,
+    `<Gather input="speech" action="${action}" method="POST" language="he-IL" speechTimeout="auto" timeout="8"></Gather>`,
+    `<Say voice="alice" language="en-US">I did not hear a reply. Could you say that again?</Say>`,
+    `<Redirect method="POST">${action}</Redirect>`,
+    "</Response>",
+  ].join("");
+}
+
+function twimlSay(spoken: string, hangup = false): string {
+  return [
+    "<Response>",
+    `<Say voice="alice" language="en-US">${escapeXml(spoken)}</Say>`,
+    hangup ? "<Hangup/>" : "",
+    "</Response>",
+  ].join("");
+}
+
+function voiceQaTurnUrl(config: BridgeConfig, qaRunId: string): string {
+  const base = (config.qaPublicBaseUrl || "").replace(/\/+$/, "");
+  if (!base) throw new Error("qaPublicBaseUrl is required for Twilio Gather QA calls");
+  return `${base}/hooks/voice-qa/turn?qaRunId=${encodeURIComponent(qaRunId)}`;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function readUrlEncodedBody(req: AsyncIterable<Buffer>, maxBytes: number): Promise<URLSearchParams> {
+  const raw = await readRawBody(req, maxBytes);
+  return new URLSearchParams(raw.toString("utf8"));
+}
+
+function readQueryString(rawUrl: string | undefined, key: string): string | undefined {
+  const url = new URL(rawUrl || "/", "https://openclaw.local");
+  const value = url.searchParams.get(key);
+  return value?.trim() || undefined;
+}
+
+function looksTerminalConversation(text: string): boolean {
+  return /(\bbye\b|\bgoodbye\b|\bthank you\b|תודה|להתראות|סיימנו|ההזמנה נקלטה)/i.test(text);
+}
+
+async function buildQaCallerReply(
+  config: BridgeConfig,
+  params: { scenario: string; persona: string; transcript: string[]; turnCount: number },
+): Promise<string> {
+  if (!config.qaGeminiApiKey) return fallbackQaReply(params.turnCount);
+
+  const prompt = [
+    "You are OpenClaw, the QA caller for the EasyCall project.",
+    "Project context: EasyCall is building a restaurant phone ordering voice agent. You are testing whether the agent is fast, warm, accurate, resilient, and natural.",
+    "You are not the restaurant agent. You are the end user calling the restaurant voice agent.",
+    `Scenario: ${params.scenario}`,
+    `Persona: ${params.persona}`,
+    "",
+    "Conversation so far:",
+    params.transcript.length ? params.transcript.join("\n") : "(no transcript yet)",
+    "",
+    "Return only the next thing the caller should say out loud.",
+    "Keep it short, realistic, and order-focused. No markdown. No analysis.",
+    "If the agent asks for business/name/address, answer with plausible test details.",
+  ].join("\n");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(config.qaGeminiApiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.4, maxOutputTokens: 80 },
+      }),
+    },
+  );
+  const text = await res.text();
+  const payload: any = text ? safeJson(text) : {};
+  if (!res.ok) {
+    throw new Error(`Gemini QA reply failed ${res.status}: ${typeof payload === "object" ? JSON.stringify(payload) : text}`);
+  }
+  const reply = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return typeof reply === "string" && reply.trim() ? cleanSpokenReply(reply) : fallbackQaReply(params.turnCount);
+}
+
+function cleanSpokenReply(text: string): string {
+  return text
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 260);
+}
+
+function fallbackQaReply(turnCount: number): string {
+  const replies = [
+    "Yes, I want to place a simple order for tomorrow.",
+    "My name is OpenClaw QA, and this is a test business.",
+    "I would like one simple item, whatever is easiest for the restaurant.",
+    "Can you please confirm the order and the pickup time?",
+    "Thank you, that sounds good.",
+  ];
+  return replies[Math.min(turnCount, replies.length - 1)];
 }
 
 function buildVoiceQaCallMessage(params: {

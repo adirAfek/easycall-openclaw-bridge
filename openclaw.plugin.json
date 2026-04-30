@@ -76,6 +76,37 @@
         ],
         "default": "log",
         "description": "Where final voice QA reports are sent. Use log first; whatsapp requires ownerWaid and WhatsApp channel."
+      },
+      "qaCallProvider": {
+        "type": "string",
+        "enum": [
+          "voicecall",
+          "twilio_say",
+          "twilio_gather"
+        ],
+        "default": "voicecall",
+        "description": "How voice QA calls are started. voicecall uses OpenClaw's voice-call plugin; twilio_say speaks once; twilio_gather runs a turn-based spoken QA conversation."
+      },
+      "twilioAccountSid": {
+        "type": "string",
+        "description": "Optional Twilio Account SID for the twilio_say fallback. Prefer TWILIO_ACCOUNT_SID in the VPS environment."
+      },
+      "twilioAuthToken": {
+        "type": "string",
+        "description": "Optional Twilio Auth Token for the twilio_say fallback. Prefer TWILIO_AUTH_TOKEN in the VPS environment."
+      },
+      "qaPublicBaseUrl": {
+        "type": "string",
+        "description": "Public HTTPS base URL for the bridge, used by Twilio Gather callbacks, e.g. https://openclaw.example.com."
+      },
+      "qaGeminiApiKey": {
+        "type": "string",
+        "description": "Optional Gemini API key used to generate next QA caller turns in twilio_gather mode. Prefer GEMINI_API_KEY."
+      },
+      "qaMaxTurns": {
+        "type": "number",
+        "default": 6,
+        "description": "Maximum QA caller turns for twilio_gather conversations."
       }
     }
   },

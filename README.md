@@ -38,6 +38,14 @@ EASYCALL_PRODUCTION_NUMBER=+972765993143
 # EASYCALL_QA_CALLER_NUMBER=+15551234567
 EASYCALL_QA_MAX_DURATION_SECONDS=180
 EASYCALL_QA_NOTIFY_MODE=log
+EASYCALL_QA_CALL_PROVIDER=voicecall
+# Required for EASYCALL_QA_CALL_PROVIDER=twilio_say or twilio_gather:
+# TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# TWILIO_AUTH_TOKEN=replace-with-twilio-auth-token
+# Required for EASYCALL_QA_CALL_PROVIDER=twilio_gather:
+# EASYCALL_QA_PUBLIC_BASE_URL=https://claw.example.com
+# GEMINI_API_KEY=replace-with-gemini-api-key
+EASYCALL_QA_MAX_TURNS=6
 ```
 
 ## Hostinger / OpenClaw Setup
@@ -116,6 +124,8 @@ Expected:
 - OpenClaw polls `easycall_voice_qa_status`.
 - OpenClaw writes a short subjective report with scores and evidence via `easycall_voice_qa_report`.
 - No Cursor PR is created unless Adir explicitly asks after reading the report.
+
+If the OpenClaw `voice-call` plugin cannot keep a working realtime/conversation audio path, set `EASYCALL_QA_CALL_PROVIDER=twilio_gather`. That fallback still runs through this OpenClaw bridge, but it uses Twilio `<Say>` and `<Gather input="speech">` callbacks so OpenClaw can speak as the QA caller, hear EasyCall's reply, generate the next caller turn, and store the transcript. Use `twilio_say` only as a one-line audio sanity check.
 
 ## Smoke Test
 

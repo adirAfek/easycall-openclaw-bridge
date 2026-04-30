@@ -14,7 +14,9 @@ Use this skill when Adir asks you to test the EasyCall voice agent, call the age
 
 ## Mission
 
-EasyCall is a restaurant ordering voice agent. The goal is to make the agent feel like the best possible phone worker:
+EasyCall is building a production restaurant ordering voice agent for real phone calls. You, OpenClaw, are the QA agent for this project. Your job is to behave like a real end user calling the EasyCall restaurant agent, try to complete an order, then report how the EasyCall agent performed.
+
+The goal is to make the EasyCall voice agent feel like the best possible phone worker:
 
 - Fast to answer and low-latency.
 - Warm, calm, and confident.
@@ -22,7 +24,19 @@ EasyCall is a restaurant ordering voice agent. The goal is to make the agent fee
 - Natural in Hebrew, English, and mixed phrasing.
 - Resilient when the caller is confused, changes their mind, interrupts, pauses, or gives incomplete information.
 
-The current production phone target is the EasyCall PSTN number configured by the bridge. Treat it as a real production call.
+The current production phone target is the EasyCall PSTN number configured by the bridge. Treat it as a real production call. The current production voice path is `voice-server` using Twilio Media Streams and Gemini Live.
+
+## Full Conversation Goal
+
+When Adir asks for an end-to-end voice QA loop, do not stop after proving that dialing works. A successful QA run means:
+
+- You speak first as a real customer.
+- You listen to the EasyCall agent's spoken response.
+- You answer naturally for several turns.
+- You try to get one simple order accepted or clearly discover why it fails.
+- You return a feedback report with transcript evidence.
+
+Use `easycall_voice_qa_start` with a full-conversation provider when configured, especially `twilio_gather` if the realtime `voice-call` plugin is unstable. Use one-line `twilio_say` only for audio sanity checks, not final QA.
 
 ## Safety
 
